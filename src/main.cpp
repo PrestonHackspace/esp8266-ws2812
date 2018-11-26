@@ -44,15 +44,15 @@
 #include <WS2812FX.h>
 #include <WiFiManager.h>
 
+#include "mdns.h"
+#include "mqtt.h"
+
 extern const char index_html[];
 extern const char main_js[];
 
 // QUICKFIX...See https://github.com/esp8266/Arduino/issues/263
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define max(a, b) ((a) > (b) ? (a) : (b))
-
-#define LED_PIN 2 // 0 = GPIO0, 2=GPIO2
-#define LED_COUNT 60
 
 #define WIFI_TIMEOUT 30000 // checks WiFi every ...ms. Reset after this time, if WiFi cannot reconnect.
 #define HTTP_PORT 80
@@ -129,73 +129,79 @@ void srv_handle_modes()
   server.send(200, "text/plain", modes);
 }
 
+void apply_effect(String name, String value)
+{
+  if (name == "c")
+  {
+    uint32_t tmp = (uint32_t)strtol(&value[0], NULL, 16);
+    if (tmp >= 0x000000 && tmp <= 0xFFFFFF)
+    {
+      ws2812fx.setColor(tmp);
+    }
+  }
+
+  if (name == "m")
+  {
+    uint8_t tmp = (uint8_t)strtol(&value[0], NULL, 10);
+    ws2812fx.setMode(tmp % ws2812fx.getModeCount());
+    Serial.print("mode is ");
+    Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
+  }
+
+  if (name == "b")
+  {
+    if (value[0] == '-')
+    {
+      ws2812fx.setBrightness(ws2812fx.getBrightness() * 0.8);
+    }
+    else if (value[0] == ' ')
+    {
+      ws2812fx.setBrightness(min(max(ws2812fx.getBrightness(), 5) * 1.2, 255));
+    }
+    else
+    { // set brightness directly
+      uint8_t tmp = (uint8_t)strtol(&value[0], NULL, 10);
+      ws2812fx.setBrightness(tmp);
+    }
+    Serial.print("brightness is ");
+    Serial.println(ws2812fx.getBrightness());
+  }
+
+  if (name == "s")
+  {
+    if (value[0] == '-')
+    {
+      ws2812fx.setSpeed(max(ws2812fx.getSpeed(), 5) * 1.2);
+    }
+    else
+    {
+      ws2812fx.setSpeed(ws2812fx.getSpeed() * 0.8);
+    }
+    Serial.print("speed is ");
+    Serial.println(ws2812fx.getSpeed());
+  }
+
+  if (name == "a")
+  {
+    if (value[0] == '-')
+    {
+      auto_cycle = false;
+    }
+    else
+    {
+      auto_cycle = true;
+      auto_last_change = 0;
+    }
+  }
+}
+
 void srv_handle_set()
 {
   for (uint8_t i = 0; i < server.args(); i++)
   {
-    if (server.argName(i) == "c")
-    {
-      uint32_t tmp = (uint32_t)strtol(&server.arg(i)[0], NULL, 16);
-      if (tmp >= 0x000000 && tmp <= 0xFFFFFF)
-      {
-        ws2812fx.setColor(tmp);
-      }
-    }
-
-    if (server.argName(i) == "m")
-    {
-      uint8_t tmp = (uint8_t)strtol(&server.arg(i)[0], NULL, 10);
-      ws2812fx.setMode(tmp % ws2812fx.getModeCount());
-      Serial.print("mode is ");
-      Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
-    }
-
-    if (server.argName(i) == "b")
-    {
-      if (server.arg(i)[0] == '-')
-      {
-        ws2812fx.setBrightness(ws2812fx.getBrightness() * 0.8);
-      }
-      else if (server.arg(i)[0] == ' ')
-      {
-        ws2812fx.setBrightness(min(max(ws2812fx.getBrightness(), 5) * 1.2, 255));
-      }
-      else
-      { // set brightness directly
-        uint8_t tmp = (uint8_t)strtol(&server.arg(i)[0], NULL, 10);
-        ws2812fx.setBrightness(tmp);
-      }
-      Serial.print("brightness is ");
-      Serial.println(ws2812fx.getBrightness());
-    }
-
-    if (server.argName(i) == "s")
-    {
-      if (server.arg(i)[0] == '-')
-      {
-        ws2812fx.setSpeed(max(ws2812fx.getSpeed(), 5) * 1.2);
-      }
-      else
-      {
-        ws2812fx.setSpeed(ws2812fx.getSpeed() * 0.8);
-      }
-      Serial.print("speed is ");
-      Serial.println(ws2812fx.getSpeed());
-    }
-
-    if (server.argName(i) == "a")
-    {
-      if (server.arg(i)[0] == '-')
-      {
-        auto_cycle = false;
-      }
-      else
-      {
-        auto_cycle = true;
-        auto_last_change = 0;
-      }
-    }
+    apply_effect(server.argName(i), server.arg(i));
   }
+
   server.send(200, "text/plain", "OK");
 }
 
@@ -230,6 +236,21 @@ void setup()
   Serial.println("HTTP server started.");
 
   Serial.println("ready!");
+
+  mdns_init(DEVICE_TYPE_NAME, "mqtt", [](IPAddress ip, uint16_t port) {
+    mqtt_init(DEVICE_TYPE_NAME, ip, port, [](String topic, String message) {
+      if (topic == LED_CHANNEL)
+      {
+        // Example message: "m=12"
+        auto name = message.substring(0, 1);
+        auto value = message.substring(2);
+
+        apply_effect(name, value);
+      }
+    });
+
+    mqtt_subscribe(LED_CHANNEL);
+  });
 }
 
 void loop()
