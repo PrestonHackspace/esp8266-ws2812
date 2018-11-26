@@ -131,6 +131,23 @@ void srv_handle_modes()
 
 void apply_effect(String name, String value)
 {
+  if (name == "p")
+  {
+    auto sep = value.indexOf(":");
+
+    auto idx = value.substring(0, sep).toInt();
+    auto col = value.substring(sep + 1);
+
+    uint32_t tmp = (uint32_t)strtol(&col[0], NULL, 16);
+
+    if (ws2812fx.getMode() != FX_MODE_CUSTOM)
+    {
+      ws2812fx.setMode(FX_MODE_CUSTOM);
+    }
+
+    ws2812fx.setPixelColor(idx, tmp);
+  }
+
   if (name == "c")
   {
     uint32_t tmp = (uint32_t)strtol(&value[0], NULL, 16);
@@ -215,6 +232,8 @@ void setup()
   modes.reserve(5000);
   modes_setup();
 
+  ws2812fx.setCustomMode([]() { return (uint16_t)10; });
+
   Serial.println("WS2812FX setup");
   ws2812fx.init();
   ws2812fx.setMode(DEFAULT_MODE);
@@ -259,6 +278,7 @@ void loop()
 
   server.handleClient();
   ws2812fx.service();
+  mqtt_loop();
 
   if (now - last_wifi_check_time > WIFI_TIMEOUT)
   {

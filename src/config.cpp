@@ -2,7 +2,7 @@
 
 const char *DEVICE_TYPE_NAME = "LED Strip";
 
-const char *LED_CHANNEL = "building/led-strp";
+const char *LED_CHANNEL = "building/led-strip";
 
 const int LED_PIN = 2;
 const int LED_COUNT = 60;
