@@ -1,50 +1,15 @@
-/*
-  WS2812FX Webinterface.
-  
-  Harm Aldick - 2016
-  www.aldick.org
-
-  
-  FEATURES
-    * Webinterface with mode, color, speed and brightness selectors
-
-
-  LICENSE
-
-  The MIT License (MIT)
-
-  Copyright (c) 2016  Harm Aldick 
-
-  Permission is hereby granted, free of charge, to any person obtaining a copy
-  of this software and associated documentation files (the "Software"), to deal
-  in the Software without restriction, including without limitation the rights
-  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-  copies of the Software, and to permit persons to whom the Software is
-  furnished to do so, subject to the following conditions:
-
-  The above copyright notice and this permission notice shall be included in
-  all copies or substantial portions of the Software.
-
-  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-  THE SOFTWARE.
-
-  
-  CHANGELOG
-  2016-11-26 initial version
-  2018-01-06 added custom effects list option and auto-cycle feature
-  
-*/
+#ifdef ESP8266
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <WS2812FX.h>
 #include <WiFiManager.h>
+#include <WS2812FX.h>
+#else
+#include <WiFi.h>
+#include <WiFiClient.h>
+#endif
 
-#include "mdns.h"
+#include "config.h"
+#include "mdns_helper.h"
 #include "mqtt.h"
 
 extern const char index_html[];
@@ -57,8 +22,8 @@ extern const char main_js[];
 #define WIFI_TIMEOUT 30000 // checks WiFi every ...ms. Reset after this time, if WiFi cannot reconnect.
 #define HTTP_PORT 80
 
-#define DEFAULT_COLOR 0xFF5900
-#define DEFAULT_BRIGHTNESS 255
+#define DEFAULT_COLOR 0x0F0F0F
+#define DEFAULT_BRIGHTNESS 127
 #define DEFAULT_SPEED 1000
 #define DEFAULT_MODE FX_MODE_STATIC
 
@@ -127,6 +92,25 @@ void srv_handle_main_js()
 void srv_handle_modes()
 {
   server.send(200, "text/plain", modes);
+}
+
+void apply_raw(uint8_t *data, unsigned int length)
+{
+  if (ws2812fx.getMode() != FX_MODE_CUSTOM)
+  {
+    ws2812fx.setMode(FX_MODE_CUSTOM);
+  }
+
+  for (auto idx = 0; idx < length; idx += 1, data += 3)
+  {
+    auto r = *(data + 0);
+    auto g = *(data + 1);
+    auto b = *(data + 2);
+
+    auto col = (r * 65536) + (g * 256) + b;
+
+    ws2812fx.setPixelColor(idx, col);
+  }
 }
 
 void apply_effect(String name, String value)
@@ -232,7 +216,7 @@ void setup()
   modes.reserve(5000);
   modes_setup();
 
-  ws2812fx.setCustomMode([]() { return (uint16_t)10; });
+  ws2812fx.setCustomMode([]() { return (uint16_t)0; });
 
   Serial.println("WS2812FX setup");
   ws2812fx.init();
@@ -256,20 +240,43 @@ void setup()
 
   Serial.println("ready!");
 
-  mdns_init(DEVICE_TYPE_NAME, "mqtt", [](IPAddress ip, uint16_t port) {
-    mqtt_init(DEVICE_TYPE_NAME, ip, port, [](String topic, String message) {
-      if (topic == LED_CHANNEL)
-      {
-        // Example message: "m=12"
-        auto name = message.substring(0, 1);
-        auto value = message.substring(2);
+  if (mdns_init(DEVICE_TYPE_NAME))
+  {
+    MdnsService mqttService;
 
-        apply_effect(name, value);
-      }
-    });
+    if (mdns_discover("mqtt", 5, mqttService))
+    {
+      mqtt_init(DEVICE_TYPE_NAME, mqttService.ip, mqttService.port, [](const char *topic, uint8_t *payload, unsigned int length) {
+        if (strcmp(topic, LED_CHANNEL) == 0)
+        {
+          auto message = new char[length + 1];
 
-    mqtt_subscribe(LED_CHANNEL);
-  });
+          strcpy(message, (char *)payload);
+          message[length] = 0;
+
+          auto msg = String(message);
+
+          // Example message: "m=12"
+          auto name = msg.substring(0, 1);
+          auto value = msg.substring(2);
+
+          delete message;
+
+          apply_effect(name, value);
+        }
+
+        if (strcmp(topic, LED_RAW_CHANNEL) == 0)
+        {
+          // Serial.println("Raw:" + String(length));
+
+          apply_raw(payload, length / 3);
+        }
+      });
+
+      mqtt_subscribe(LED_CHANNEL);
+      mqtt_subscribe(LED_RAW_CHANNEL);
+    }
+  }
 }
 
 void loop()
@@ -278,40 +285,46 @@ void loop()
 
   server.handleClient();
   ws2812fx.service();
+
   mqtt_loop();
 
   if (now - last_wifi_check_time > WIFI_TIMEOUT)
   {
     Serial.print("Checking WiFi... ");
+
     if (WiFi.status() != WL_CONNECTED)
     {
-      Serial.println("WiFi connection lost. Reconnecting...");
-      wifi_setup();
+      Serial.println("WiFi connection lost. Restarting...");
+
+      ESP.reset();
     }
     else
     {
       Serial.println("OK");
     }
+
     last_wifi_check_time = now;
   }
 
-  if (auto_cycle && (now - auto_last_change > 10000))
-  { // cycle effect mode every 10 seconds
-    uint8_t next_mode = (ws2812fx.getMode() + 1) % ws2812fx.getModeCount();
-    if (sizeof(myModes) > 0)
-    { // if custom list of modes exists
-      for (uint8_t i = 0; i < sizeof(myModes); i++)
-      {
-        if (myModes[i] == ws2812fx.getMode())
-        {
-          next_mode = ((i + 1) < sizeof(myModes)) ? myModes[i + 1] : myModes[0];
-          break;
-        }
-      }
-    }
-    ws2812fx.setMode(next_mode);
-    Serial.print("mode is ");
-    Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
-    auto_last_change = now;
-  }
+  // if (auto_cycle && (now - auto_last_change > 10000))
+  // { // cycle effect mode every 10 seconds
+  //   uint8_t next_mode = (ws2812fx.getMode() + 1) % ws2812fx.getModeCount();
+
+  //   if (sizeof(myModes) > 0)
+  //   { // if custom list of modes exists
+  //     for (uint8_t i = 0; i < sizeof(myModes); i++)
+  //     {
+  //       if (myModes[i] == ws2812fx.getMode())
+  //       {
+  //         next_mode = ((i + 1) < sizeof(myModes)) ? myModes[i + 1] : myModes[0];
+  //         break;
+  //       }
+  //     }
+  //   }
+
+  //   ws2812fx.setMode(next_mode);
+  //   Serial.print("mode is ");
+  //   Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
+  //   auto_last_change = now;
+  // }
 }

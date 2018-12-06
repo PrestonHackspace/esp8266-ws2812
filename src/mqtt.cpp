@@ -1,65 +1,83 @@
 #include "mqtt.h"
 
-WiFiClient espClient;
-PubSubClient mqttClient(espClient);
+WiFiClient *_espClient = NULL;
+PubSubClient *_mqttClient = NULL;
 
 void mqtt_init(const char *deviceName, IPAddress ip, uint16_t port, MqttMessageCallback callback)
 {
+  _espClient = new WiFiClient();
+  _mqttClient = new PubSubClient(*_espClient);
+
   Serial.println("Connect to MQTT: " + ip.toString());
 
-  mqttClient.setServer(ip, port);
+  _mqttClient->setServer(ip, port);
 
-  mqttClient.setCallback([callback](const char *topic, byte *payload, unsigned int length) {
-    Serial.println(String("Message arrived [") + String(topic) + String("]"));
+  _mqttClient->setCallback([callback](const char *topic, uint8_t *payload, unsigned int length) {
+    // Serial.println(String("Message arrived [") + String(topic) + String("]"));
 
-    auto message = new char[length + 1];
-
-    strcpy(message, (char *)payload);
-    message[length] = 0;
-
-    if (callback)
-    {
-      callback(String(topic), String(message));
-    }
-
-    delete message;
-
-    Serial.println();
+    callback(topic, payload, length);
   });
 
-  if (mqttClient.connect(deviceName))
+  if (_mqttClient->connect(deviceName))
   {
     Serial.println("Connected");
   }
   else
   {
     Serial.println("Failed to connect to MQTT broker!");
+
+    // delete _espClient;
+    // _espClient = NULL;
+
+    // delete _mqttClient;
+    _mqttClient = NULL;
   }
 }
 
 void mqtt_subscribe(const char *topic)
 {
-  mqttClient.subscribe(topic);
+  if (_mqttClient)
+  {
+    _mqttClient->subscribe(topic);
+  }
 }
 
 void mqtt_publish(const char *topic, const char *payload)
 {
-  bool success = mqttClient.publish(topic, payload);
-
-  if (!success)
+  if (_mqttClient)
   {
-    Serial.println("Failed to publish MQTT message!");
+    bool success = _mqttClient->publish(topic, payload);
+
+    if (!success)
+    {
+      Serial.println("Failed to publish MQTT message!");
+    }
   }
 }
 
 void mqtt_loop()
 {
-  if (!mqttClient.connected())
+  if (_mqttClient)
   {
-    Serial.println("MQTT no longer connected! Will reboot in 5 seconds!");
-    delay(5000);
-    ESP.reset();
-  }
+    if (!_mqttClient->connected())
+    {
+      Serial.println("MQTT no longer connected!");
 
-  mqttClient.loop();
+      ESP.reset();
+
+      // while (!_mqttClient->connect("RECONNECT"))
+      // {
+      //   Serial.println("Reconnecting...");
+      //   delay(1000);
+      // }
+
+      // delay(1000);
+
+      // Serial.println("Resubscribing...");
+      // _mqttClient->subscribe(LED_CHANNEL);
+      // Serial.println("Resubscribed!");
+    }
+
+    _mqttClient->loop();
+  }
 }

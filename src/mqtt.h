@@ -5,11 +5,9 @@
 
 #include "config.h"
 
-typedef std::function<void(String, String)> MqttMessageCallback;
+typedef std::function<void(const char *topic, uint8_t *payload, unsigned int length)> MqttMessageCallback;
 
-// extern PubSubClient mqttClient;
-
-void mqtt_init(const char *deviceName, IPAddress ip, uint16_t port, MqttMessageCallback callbacks);
+void mqtt_init(const char *deviceName, IPAddress ip, uint16_t port, MqttMessageCallback callback);
 void mqtt_subscribe(const char *topic);
-void mqtt_publish(const char* topic, const char* payload);
+void mqtt_publish(const char *topic, const char *payload);
 void mqtt_loop();
